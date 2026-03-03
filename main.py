@@ -4,6 +4,21 @@ from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 
+from aiohttp import web
+import threading
+
+# Фиктивный сервер для Render
+async def handle(request):
+    return web.Response(text="Олух под защитой!")
+
+def run_web():
+    app = web.Application()
+    app.router.add_get('/', handle)
+    web.run_app(app, host="0.0.0.0", port=int(os.getenv("PORT", 8080)))
+
+# Запускаем сервер в отдельном потоке
+threading.Thread(target=run_web, daemon=True).start()
+
 # Токен и настройки
 TOKEN = "8660282196:AAE0-P4UUd3QLkr0eoCst4zn4wmznvoTnmU"
 VOZHAK_USERNAME = "odos765" # Твой юзернейм для авто-прав
