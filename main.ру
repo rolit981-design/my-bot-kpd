@@ -1,18 +1,17 @@
 import asyncio
-import logging
+import os
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import Command, CommandObject
+from aiogram.filters import Command
 
-# Конфигурация
+# Токен и настройки
 TOKEN = "8660282196:AAE0-P4UUd3QLkr0eoCst4zn4wmznvoTnmU"
+VOZHAK_USERNAME = "odos765" # Твой юзернейм для авто-прав
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# База данных (в памяти, при перезагрузке сбросится - для теста ок)
-# В идеале потом подключим MongoDB
-user_data = {}  # {user_id: {'rank': 0, 'warns': [], 'mute_until': None}}
-chat_config = {"warn_limit": 5}
+# База данных в памяти
+user_db = {} # {user_id: {'rank': 0, 'warns': [], 'username': ''}}
 
 HEROES = {
     "hiccup": "🐉 [Иккинг]: ",
@@ -22,63 +21,69 @@ HEROES = {
     "twins": "💥 [Близнецы]: "
 }
 
-# --- Вспомогательные функции ---
-def get_user(uid):
-    if uid not in user_data:
-        user_data[uid] = {'rank': 0, 'warns': [], 'mute_until': None}
-    return user_data[uid]
+def get_data(user: types.User):
+    uid = user.id
+    if uid not in user_db:
+        # Если это ты, сразу ставим 5 ранг
+        rank = 5 if user.username == VOZHAK_USERNAME else 0
+        user_db[uid] = {'rank': rank, 'warns': [], 'username': user.username}
+    return user_db[uid]
 
-# --- Команды модерации ---
+# --- КОМАНДЫ ИЕРАРХИИ ---
 
-@dp.message(Command("повысить"))
-async def promote(message: types.Message):
-    admin = get_user(message.from_user.id)
-    if admin['rank'] < 4: return # Только высокие ранги
+@dp.message(F.text.lower().startswith("кто админ"))
+async def list_admins(message: types.Message):
+    admins = [f"Ранг {d['rank']}: @{d['username']}" for uid, d in user_db.items() if d['rank'] > 0]
+    admins.sort(reverse=True)
+    response = "\n".join(admins) if admins else "Пока только обычные викинги."
+    await message.reply(f"{HEROES['fishlegs']} Список всадников:\n{response}")
+
+@dp.message(F.text.lower().startswith(("повысить", "понизить")))
+async def change_rank(message: types.Message):
+    admin = get_data(message.from_user)
+    if admin['rank'] < 4: return 
     
     if not message.reply_to_message: return
-    target_id = message.reply_to_message.from_user.id
-    target = get_user(target_id)
+    target_user = message.reply_to_message.from_user
+    target = get_data(target_user)
     
-    if target['rank'] < 5:
-        target['rank'] += 1
-        await message.reply(f"{HEROES['hiccup']} Поздравляю, теперь твой ранг: {target['rank']}!")
+    text = message.text.lower()
+    step = 1
+    # Проверка на "повысить 2"
+    parts = text.split()
+    if len(parts) > 1 and parts[1].isdigit():
+        step = int(parts[1])
 
-@dp.message(F.text.lower().startswith("варн"))
-async def set_warn(message: types.Message):
-    admin = get_user(message.from_user.id)
-    if admin['rank'] < 1: return
-    
-    if not message.reply_to_message: return
-    target_id = message.reply_to_message.from_user.id
-    target = get_user(target_id)
-    
-    # Логика иерархии
-    if admin['rank'] <= target['rank']:
-        return await message.reply(f"{HEROES['astrid']} Ты не можешь наказывать всадника своего уровня или выше!")
-
-    target['warns'].append(datetime.now() + timedelta(days=1))
-    count = len(target['warns'])
-    
-    if count >= chat_config["warn_limit"]:
-        await bot.ban_chat_member(message.chat.id, target_id)
-        await message.answer(f"{HEROES['astrid']} Лимит превышен! Нарушитель изгнан с Олуха.")
+    if "повысить" in text:
+        target['rank'] = min(5, target['rank'] + step)
+        await message.reply(f"{HEROES['hiccup']} @{target_user.username}, твой ранг повышен до {target['rank']}!")
     else:
-        await message.answer(f"{HEROES['astrid']} Предупреждение выдано! ({count}/{chat_config['warn_limit']})")
+        target['rank'] = max(0, target['rank'] - step)
+        await message.reply(f"{HEROES['hiccup']} @{target_user.username}, твой ранг понижен до {target['rank']}.")
 
-@dp.message(F.text.lower() == "кто я")
+# --- КАРТОЧКА ПОЛЬЗОВАТЕЛЯ ---
+
+@dp.message(F.text.lower().in_(["кто я", "!роль", "профиль", "хто я"]))
 async def who_am_i(message: types.Message):
-    user = get_user(message.from_user.id)
-    status = "Обычный участник" if user['rank'] == 0 else f"Модератор {user['rank']} ранга"
-    await message.reply(f"{HEROES['fishlegs']} Хм, дай-ка свериться с книгой... Твой ранг: {user['rank']} ({status}). Варнов: {len(user['warns'])}")
+    user = get_data(message.from_user)
+    await message.reply(f"{HEROES['fishlegs']} Так-так... Твой ранг: {user['rank']}. Предупреждений: {len(user['warns'])}/5.")
 
 @dp.message(F.text.lower() == "моя стата")
 async def my_stats(message: types.Message):
-    # Простой текстовый график для примера
-    user = get_user(message.from_user.id)
-    bar = "█" * user['rank'] + "░" * (5 - user['rank'])
-    await message.reply(f"{HEROES['fishlegs']} Твоя активность:\nРанг: [{bar}] {user['rank']}/5")
+    user = get_data(message.from_user)
+    graph = "🟩" * user['rank'] + "⬜" * (5 - user['rank'])
+    await message.reply(f"{HEROES['fishlegs']} Твой прогресс обучения:\n{graph} ({user['rank']}/5)")
+
+# --- ПРИВЕТСТВИЕ ---
 
 @dp.chat_member()
-async def welcome(event: types.ChatMemberUpdated):
+async def auto_welcome(event: types.ChatMemberUpdated):
     if event.new_chat_member.status == "member":
-        await event.answer(f"{HEROES['snotlout']} О, новый викинг! Смо
+        await event.answer(f"{HEROES['snotlout']} Очередной новичок! Надеюсь, ты принес подношение Великому Сморкале?")
+
+async def main():
+    print("Бот Драконьего Края запущен!")
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
