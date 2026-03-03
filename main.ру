@@ -1,0 +1,84 @@
+import asyncio
+import logging
+from datetime import datetime, timedelta
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.filters import Command, CommandObject
+
+# Конфигурация
+TOKEN = "8660282196:AAE0-P4UUd3QLkr0eoCst4zn4wmznvoTnmU"
+bot = Bot(token=TOKEN)
+dp = Dispatcher()
+
+# База данных (в памяти, при перезагрузке сбросится - для теста ок)
+# В идеале потом подключим MongoDB
+user_data = {}  # {user_id: {'rank': 0, 'warns': [], 'mute_until': None}}
+chat_config = {"warn_limit": 5}
+
+HEROES = {
+    "hiccup": "🐉 [Иккинг]: ",
+    "astrid": "🪓 [Астрид]: ",
+    "fishlegs": "📚 [Рыбьеног]: ",
+    "snotlout": "🔥 [Сморкала]: ",
+    "twins": "💥 [Близнецы]: "
+}
+
+# --- Вспомогательные функции ---
+def get_user(uid):
+    if uid not in user_data:
+        user_data[uid] = {'rank': 0, 'warns': [], 'mute_until': None}
+    return user_data[uid]
+
+# --- Команды модерации ---
+
+@dp.message(Command("повысить"))
+async def promote(message: types.Message):
+    admin = get_user(message.from_user.id)
+    if admin['rank'] < 4: return # Только высокие ранги
+    
+    if not message.reply_to_message: return
+    target_id = message.reply_to_message.from_user.id
+    target = get_user(target_id)
+    
+    if target['rank'] < 5:
+        target['rank'] += 1
+        await message.reply(f"{HEROES['hiccup']} Поздравляю, теперь твой ранг: {target['rank']}!")
+
+@dp.message(F.text.lower().startswith("варн"))
+async def set_warn(message: types.Message):
+    admin = get_user(message.from_user.id)
+    if admin['rank'] < 1: return
+    
+    if not message.reply_to_message: return
+    target_id = message.reply_to_message.from_user.id
+    target = get_user(target_id)
+    
+    # Логика иерархии
+    if admin['rank'] <= target['rank']:
+        return await message.reply(f"{HEROES['astrid']} Ты не можешь наказывать всадника своего уровня или выше!")
+
+    target['warns'].append(datetime.now() + timedelta(days=1))
+    count = len(target['warns'])
+    
+    if count >= chat_config["warn_limit"]:
+        await bot.ban_chat_member(message.chat.id, target_id)
+        await message.answer(f"{HEROES['astrid']} Лимит превышен! Нарушитель изгнан с Олуха.")
+    else:
+        await message.answer(f"{HEROES['astrid']} Предупреждение выдано! ({count}/{chat_config['warn_limit']})")
+
+@dp.message(F.text.lower() == "кто я")
+async def who_am_i(message: types.Message):
+    user = get_user(message.from_user.id)
+    status = "Обычный участник" if user['rank'] == 0 else f"Модератор {user['rank']} ранга"
+    await message.reply(f"{HEROES['fishlegs']} Хм, дай-ка свериться с книгой... Твой ранг: {user['rank']} ({status}). Варнов: {len(user['warns'])}")
+
+@dp.message(F.text.lower() == "моя стата")
+async def my_stats(message: types.Message):
+    # Простой текстовый график для примера
+    user = get_user(message.from_user.id)
+    bar = "█" * user['rank'] + "░" * (5 - user['rank'])
+    await message.reply(f"{HEROES['fishlegs']} Твоя активность:\nРанг: [{bar}] {user['rank']}/5")
+
+@dp.chat_member()
+async def welcome(event: types.ChatMemberUpdated):
+    if event.new_chat_member.status == "member":
+        await event.answer(f"{HEROES['snotlout']} О, новый викинг! Смо
